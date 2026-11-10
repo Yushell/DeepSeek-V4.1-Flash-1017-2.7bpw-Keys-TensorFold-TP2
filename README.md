@@ -28,7 +28,7 @@ The deeper stack keeps its own credits (the RoCE transport, the kernel kit, the 
 | Sustained aggregate, 90 s, set b | 8 streams 163.4 · **16 streams 194.9 tok/s (+19%)** |
 | 16-stream capacity | 16 x 131,072-token prompts at once: burst 850.1 s, **17/17 replies identical to their solo runs**, 16/16 needles found |
 | Long context | 1M needle: **1,039,833 prompt tokens, exact in 506.0 s**; 131K needle exact in 56.5 s |
-| Load | ~45 s to live; 109.3 GiB active; 9 GiB (head) / 11 GiB (worker) still available |
+| Load | ~45 s to ready; 109.3 GiB active; 9 GiB (head) / 11 GiB (worker) still available |
 | Idle cost | **~1.3-2.4% of one core per node** (100% of a core without the idle-nap patch) |
 | Tool calls | gates 6/6: plain and streamed, no DSML markup leaks into `content` |
 | **Cut-in latency** | a short request sent 3 s into a cold prompt answers in **1.11 s at 64K** and **0.79 s at 150K** (22.9 s / 33.9 s without the fill switches) |
@@ -136,7 +136,7 @@ Why the two extra patches:
 
 ## Verify it
 
-`scripts/verify.sh` runs the recipe's own tools against a live lane:
+`scripts/verify.sh` runs the recipe's own tools against a running server:
 
 ```bash
 TOOLS=/opt/dsv41-27-recipe/tools ./scripts/verify.sh
