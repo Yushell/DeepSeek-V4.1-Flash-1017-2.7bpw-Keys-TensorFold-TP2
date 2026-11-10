@@ -69,7 +69,7 @@ Prerequisites: two GB10 nodes on a 200 GbE / RoCE link (two rails preferred), Do
        --dst /models/dsv41-27-ablit
    ```
 
-   Check `ABLIT_META.json` reports `n_edited: 104`. Copy the recipe's chat template into the pack (`cp <recipe>/chat/chat_template.jinja /mnt/models/dsv41-27-ablit/`), and stage the Engram shards 47/48 under `/mnt/models/dsv41-27-engram/`.
+   Check `ABLIT_META.json` reports `n_edited: 104`. The Keys repo is gated with automatic approval, so accept its terms once in the browser before `hf download`. Copy the recipe's chat template into the pack (`cp <recipe>/chat/chat_template.jinja /mnt/models/dsv41-27-ablit/`), and stage the Engram shards 47/48 under `/mnt/models/dsv41-27-engram/`.
 
 2. **Build the engine** (see [Build it](#build-it)), then put `tensorfold-native`, `tf-dsv41-lanes`, `tf-dsv41-rank-cache`, `node_inputs.sh` and `make_token_map.py` in `/opt/dsv41-27-engine` on **both** nodes and compare md5s.
 
