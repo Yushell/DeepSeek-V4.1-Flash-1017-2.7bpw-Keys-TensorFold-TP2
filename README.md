@@ -25,7 +25,7 @@ The deeper stack keeps its own credits (the RoCE transport, the kernel kit, the 
 | Metric | Result |
 |---|---|
 | House bench, 1 stream, 384 tokens, median of 3 | **structured 143.7 · prose 59.1 · coding 98.4 tok/s** (identical texts across reps) |
-| Sustained aggregate, 90 s, set b | 8 streams 163.8 · **16 streams 194.9 tok/s** (+19.0%) |
+| Sustained aggregate, 90 s, set b | 8 streams 163.4 · **16 streams 194.9 tok/s (+19%)** |
 | 16-stream capacity | 16 x 131,072-token prompts at once: burst 850.1 s, **17/17 replies identical to their solo runs**, 16/16 needles found |
 | Long context | 1M needle: **1,039,833 prompt tokens, exact in 506.0 s**; 131K needle exact in 56.5 s |
 | Load | ~45 s to live; 109.3 GiB active; 9 GiB (head) / 11 GiB (worker) still available |
