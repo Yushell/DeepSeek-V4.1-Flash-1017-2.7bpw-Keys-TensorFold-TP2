@@ -1,0 +1,151 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: superllm <superllm@spark-0c61.local>
+Date: Tue, 27 Oct 2026 15:35:58 +0000
+Subject: [PATCH] local: RDMA proxy naps when idle (port of MiaAI-Lab
+ 0010-rdma-idle-nap)
+
+---
+ zig/src/families/dsv41/rdma.zig | 78 ++++++++++++++++++++++++++++++++-
+ 1 file changed, 76 insertions(+), 2 deletions(-)
+
+diff --git a/zig/src/families/dsv41/rdma.zig b/zig/src/families/dsv41/rdma.zig
+index 3f9c28e..e46bbf2 100644
+--- a/zig/src/families/dsv41/rdma.zig
++++ b/zig/src/families/dsv41/rdma.zig
+@@ -25,8 +25,13 @@ const mtu_4096 = 5;
+ const wc_recv_rdma_with_imm = 129;
+ const host_register_portable = 0x01;
+ const host_register_devicemap = 0x02;
++const pr_set_timerslack: c_int = 29;
++const default_idle_ns: u64 = 2 * std.time.ns_per_s;
++const default_nap_ns: u64 = 100 * std.time.ns_per_us;
+ 
+-pub const Error = error{ VerbsFailed, PostFailed, BadInfo, TooLarge, Failed, NoHostRegister } || cuda.Error || fabric.verbs.Error || std.posix.MMapError || std.Thread.SpawnError;
++extern "c" fn prctl(option: c_int, arg2: c_ulong, arg3: c_ulong, arg4: c_ulong, arg5: c_ulong) c_int;
++
++pub const Error = error{ VerbsFailed, PostFailed, BadInfo, TooLarge, Failed, NoHostRegister, BadRdmaIdle, BadRdmaNap } || cuda.Error || fabric.verbs.Error || std.posix.MMapError || std.Thread.SpawnError;
+ 
+ /// The Python build's switches, with their defaults (TF_RDMA_SLOTS, TF_RDMA_STAGE_BLOCKS, ..., TF_RDMA_PDL as served).
+ pub const Settings = struct {
+@@ -43,6 +48,45 @@ pub const Settings = struct {
+     probing: bool = false,
+ };
+ 
++/// TF_RDMA_IDLE_S: seconds with nothing posted or reaped before the proxy naps (0: never nap; default 2).
++fn parseIdleNs(text: []const u8) Error!u64 {
++    const seconds = std.fmt.parseFloat(f64, text) catch return error.BadRdmaIdle;
++    if (!std.math.isFinite(seconds) or seconds < 0) return error.BadRdmaIdle;
++    const ns = seconds * @as(f64, @floatFromInt(std.time.ns_per_s));
++    if (ns > @as(f64, @floatFromInt(3600 * std.time.ns_per_s))) return error.BadRdmaIdle;
++    return @intFromFloat(ns);
++}
++
++fn envIdleNs() Error!u64 {
++    const raw = std.c.getenv("TF_RDMA_IDLE_S") orelse return default_idle_ns;
++    const text = std.mem.span(raw);
++    return if (text.len == 0) default_idle_ns else parseIdleNs(text);
++}
++
++/// TF_RDMA_NAP_US: the proxy's sleep between looks once it is idle (default 100; at least 1).
++fn parseNapNs(text: []const u8) Error!u64 {
++    const us = std.fmt.parseInt(u64, text, 10) catch return error.BadRdmaNap;
++    if (us < 1 or us > 1_000_000) return error.BadRdmaNap;
++    return us * std.time.ns_per_us;
++}
++
++fn envNapNs() Error!u64 {
++    const raw = std.c.getenv("TF_RDMA_NAP_US") orelse return default_nap_ns;
++    const text = std.mem.span(raw);
++    return if (text.len == 0) default_nap_ns else parseNapNs(text);
++}
++
++fn monotonicNs() u64 {
++    var ts: std.c.timespec = undefined;
++    _ = std.c.clock_gettime(.MONOTONIC, &ts);
++    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
++}
++
++fn nap(ns: u64) void {
++    const ts: std.c.timespec = .{ .sec = @intCast(ns / std.time.ns_per_s), .nsec = @intCast(ns % std.time.ns_per_s) };
++    _ = std.c.nanosleep(&ts, null);
++}
++
+ /// What the other side's queue pairs toward this rank need (a device each), and where this rank's receive ring is.
+ pub const Info = extern struct {
+     devices: u32,
+@@ -149,6 +193,9 @@ pub const Ring = struct {
+     running: std.atomic.Value(bool) = .init(false),
+     failed: std.atomic.Value(bool) = .init(false),
+     why: [128]u8 = @splat(0),
++    /// The proxy's idle back-off: quiet for `idle_ns` (0: never nap), then sleep `nap_ns` between looks.
++    idle_ns: u64 = default_idle_ns,
++    nap_ns: u64 = default_nap_ns,
+ 
+     // the metadata block: flags [slots][world], doorbell, sizes [slots], sent [slots], abort word
+     fn flags(r: *const Ring) [*]u64 {
+@@ -174,6 +221,8 @@ pub const Ring = struct {
+     pub fn create(gpa: std.mem.Allocator, d: *const cuda.Driver, k: Kernels, devices: []const []const u8, rank: u32, world: u32, s: Settings) Error!*Ring {
+         if (world < 2 or world > max_ranks or rank >= world or devices.len == 0 or devices.len > max_devices) return error.BadInfo;
+         if (s.slots < 2 or s.slots > seqs.max_slots or s.max_bytes == 0 or s.max_bytes % 64 != 0) return error.BadInfo;
++        const idle_ns = try envIdleNs();
++        const nap_ns = try envNapNs();
+         const r = try gpa.create(Ring);
+         errdefer gpa.destroy(r);
+         var verbs = try Verbs.open(null);
+@@ -189,7 +238,7 @@ pub const Ring = struct {
+         var scalars = try cuda.DeviceBuffer.alloc(d, 80);
+         errdefer scalars.free();
+         try scalars.fill8(0, null);
+-        r.* = .{ .d = d, .verbs = verbs, .k = k, .s = s, .rank = rank, .world = world, .hr = hr, .send = send, .recv = recv, .meta = meta, .scalars = scalars };
++        r.* = .{ .d = d, .verbs = verbs, .k = k, .s = s, .rank = rank, .world = world, .hr = hr, .send = send, .recv = recv, .meta = meta, .scalars = scalars, .idle_ns = idle_ns, .nap_ns = nap_ns };
+         r.v = &r.verbs;
+         errdefer for (r.nics[0..r.nd]) |*n| r.closeNic(n);
+         for (devices) |name| {
+@@ -330,8 +379,16 @@ pub const Ring = struct {
+         var arrivals: seqs.Arrivals = .{ .nd = nd };
+         var posted: u64 = 0;
+         var wc: [64]vabi.Wc = undefined;
++        // A decode round's gathers come microseconds apart; only a long quiet spell naps. The first gather after one
++        // waits out at most one nap, and the next doorbell or completion spins again.
++        const naps = r.idle_ns > 0;
++        if (naps) _ = prctl(pr_set_timerslack, 1000, 0, 0, 0); // 1 us, so a nap is about TF_RDMA_NAP_US
++        var quiet: u64 = 0; // passes with nothing posted or reaped
++        var quiet_since: u64 = monotonicNs();
++        var drowsy = false;
+         while (r.running.load(.monotonic)) {
+             const ring = @atomicLoad(u64, r.doorbell(), .acquire);
++            var busy = posted < ring;
+             while (posted < ring) {
+                 const q = posted + 1;
+                 const slot: usize = @intCast(q % r.s.slots);
+@@ -358,6 +415,7 @@ pub const Ring = struct {
+                     r.fail("ibv_poll_cq failed");
+                     return;
+                 }
++                busy = busy or k > 0;
+                 for (wc[0..@intCast(k)]) |w| {
+                     if (w.status != vabi.wc_success) {
+                         r.fail(r.v.statusText(w.status));
+@@ -380,6 +438,22 @@ pub const Ring = struct {
+                     }
+                 }
+             }
++            if (!naps) continue;
++            if (busy) {
++                drowsy = false;
++                quiet = 0;
++                continue;
++            }
++            if (drowsy) {
++                nap(r.nap_ns);
++                continue;
++            }
++            quiet += 1;
++            if (quiet == 1) {
++                quiet_since = monotonicNs();
++            } else if ((quiet & 1023) == 0 and monotonicNs() -% quiet_since > r.idle_ns) {
++                drowsy = true;
++            }
+         }
+     }
+ 
