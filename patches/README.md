@@ -1,7 +1,26 @@
 # Patches in this folder
 
-`0002-rdma-idle-nap.patch` is the only patch we run beyond the pack's own three. It is not ours; it is
-reproduced here so the exact served binary is reproducible.
+`0002-rdma-idle-nap.patch` and `0003-fill-drain-pr51.patch` are the two patches we run beyond the pack's own three.
+Neither is ours; both are reproduced here so the exact served binary is reproducible.
+
+## 0003: fill drain (upstream PR #51)
+
+- **What:** +101/−7 over five files (`core/engine_api.zig`, `core/lane_host.zig`, `core/lane_host_fill_test.zig`,
+  `families/dsv41/native.zig`, `native/cuda.zig`): `TF_FILL_DRAIN=ROWS` lets the lane host start whole one-step
+  prompt passes back to back in one turn, up to ROWS rows, under `TF_FILL_CHUNKS` + `TF_FILL_MANY`. Unset or 0 keeps
+  the old behaviour.
+- **Why:** with `TF_FILL_CHUNKS` + `TF_FILL_MANY` alone, short prompts that arrive together start a round apart
+  (P1 R P2 R ...), which costs a burst of eight short requests 36-38% of its aggregate decode rate; DRAIN starts them
+  P1 P2 ... R and lifts that burst 56-60% over the unset build, with the slowest first token 1.01 to 0.60 s.
+  It also makes a single short request cut in: measured on this recipe, a short request sent 3 s into a cold prompt
+  returns in **1.11 s at 64K** and **0.79 s at 150K**, against 22.9 s and 33.9 s without the fill switches.
+- **Our numbers** (2.7 bpw pack, 16 streams): sustained 8 streams 163.4 (was 163.8), 16 streams 194.9 (was 194.9),
+  TTFT p95 0.77 / 1.82 s (was 0.87 / 2.05), 1M needle exact in 506.0 s (was 510.9). No burst or prefill cost.
+- **Provenance:** [PR #51](https://github.com/bertholomus/TensorFold/pull/51) by
+  [OsakaTX](https://github.com/OsakaTX), open and mergeable against `deepseek-v41-zig-tp2`. The diff here is
+  **rebased onto `a57deb9` + the pack patches + `0002`**: four of the PR's five files apply as they are, and
+  `native.zig` needed three small edits (a `fill_drain` field on `Loaded`, the env parse, and the field on the
+  returned `Info`), which this diff already carries. Apache-2.0, as TensorFold is.
 
 ## 0002: the RDMA proxy naps when idle
 

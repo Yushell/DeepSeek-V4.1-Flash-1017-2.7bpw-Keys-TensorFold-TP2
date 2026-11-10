@@ -1,0 +1,194 @@
+diff --git a/zig/src/core/engine_api.zig b/zig/src/core/engine_api.zig
+index e5b86c6..d87b739 100644
+--- a/zig/src/core/engine_api.zig
++++ b/zig/src/core/engine_api.zig
+@@ -267,6 +267,8 @@ pub const Info = struct {
+     /// The live streams' rounds the lane host runs between two steps of a prompt pass (0: a step every turn of its
+     /// loop, a round between); none waits while no stream decodes.
+     fill_rounds: u32 = 0,
++    /// Rows of whole one-step passes the lane host starts back to back before a round (0: one a turn, a round between).
++    fill_drain: u32 = 0,
+     /// The engine keeps prompt states between requests, so ``prefilled`` counts the tokens it restored.
+     prompt_cache: bool = false,
+     /// The policy the engine runs under, one line (`/health` shows it); empty: none.
+diff --git a/zig/src/core/lane_host.zig b/zig/src/core/lane_host.zig
+index 291e919..152ea7d 100644
+--- a/zig/src/core/lane_host.zig
++++ b/zig/src/core/lane_host.zig
+@@ -424,11 +424,14 @@ pub const LaneHost = struct {
+ 
+     /// The next filling job's next prompt chunk: the other streams' rounds run between chunks, not after the prompt.
+     /// A pass that began waits out Info.fill_rounds of those rounds between two of its steps (none when none decodes).
+-    fn fillOne(h: *LaneHost) void {
+-        if (h.filling.items.len == 0) return;
++    fn fillOne(h: *LaneHost, drained: *usize) bool {
++        if (h.filling.items.len == 0) return false;
+         const at = fill.next(h);
+         const job = h.filling.items[at];
+-        if (job.fill_began and h.fill_since < h.info_.fill_rounds and h.core.activeCount() > 0) return;
++        const rows = @max(1, job.stream.prompt_len -| job.stream.cached);
++        // drained: this turn's whole-pass rows; past the first, only a new pass within Info.fill_drain rows runs
++        if (drained.* > 0 and (job.fill_began or drained.* + rows > h.info_.fill_drain)) return false;
++        if (job.fill_began and h.fill_since < h.info_.fill_rounds and h.core.activeCount() > 0) return false;
+         h.fill_since = 0;
+         const first = !job.fill_began;
+         job.fill_began = true;
+@@ -446,12 +449,16 @@ pub const LaneHost = struct {
+                 } else h.drop(job, h.words(e)),
+                 else => h.drop(job, h.words(e)),
+             };
+-            return;
++            return false;
+         };
+-        if (!done) return;
++        if (!done) return false;
+         _ = h.filling.orderedRemove(at);
+         h.prefilled(job, job.began);
+         _ = h.deliver(job);
++        if (!first) return false;
++        drained.* += rows;
++        // true: this pass went in whole at its first step, so another new one may follow it before the round
++        return h.info_.fill_drain > 0;
+     }
+ 
+     /// A reply's grammar from the server's compiler (Info.structures engines get requests that carry one).
+@@ -617,7 +624,12 @@ pub const LaneHost = struct {
+             rows_host.answer(h);
+             learn.refuse(h);
+             while (h.admitOne()) {}
+-            h.fillOne();
++            // a burst of short prompts goes in before the next round, Info.fill_drain rows of them at most
++            var drained: usize = 0;
++            while (h.fillOne(&drained)) {
++                // a backend that holds one pass at a time admits the next once the last went in
++                while (h.admitOne()) {}
++            }
+             status.noteLive(h);
+             h.lock();
+             if (h.closing) {
+diff --git a/zig/src/core/lane_host_fill_test.zig b/zig/src/core/lane_host_fill_test.zig
+index d43361c..8054169 100644
+--- a/zig/src/core/lane_host_fill_test.zig
++++ b/zig/src/core/lane_host_fill_test.zig
+@@ -294,3 +294,78 @@ test "a pass that began waits out fill_rounds of the live streams' rounds betwee
+     for (seen.at[0..3], seen.at[1..4]) |a, b| try std.testing.expect(b - a >= 3); // the first stream's rounds between
+     try std.testing.expectEqualSlices(Id, &.{ 1, 2 }, &order.prefilled);
+ }
++
++/// The replies a burst's requests finished (Passes keeps two prefill ids; a burst has three).
++const Finished = struct {
++    mutex: std.Io.Mutex = .init,
++    done: usize = 0,
++    fn event(ctx: *anyopaque, _: Id, e: *const Event) void {
++        const o: *@This() = @ptrCast(@alignCast(ctx));
++        o.mutex.lockUncancelable(std.testing.io);
++        defer o.mutex.unlock(std.testing.io);
++        switch (e.*) {
++            .finished => o.done += 1,
++            else => {},
++        }
++    }
++    fn wait(o: *@This(), n: usize) void {
++        while (true) {
++            o.mutex.lockUncancelable(std.testing.io);
++            const d = o.done;
++            o.mutex.unlock(std.testing.io);
++            if (d == n) return;
++            std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch {};
++        }
++    }
++};
++
++/// The core's rounds run before each of three 4-token prompts' one-step passes, all waiting before the host starts.
++fn burstSteps(one_pass: bool, fill_drain: u32) ![3]u64 {
++    const gpa = std.testing.allocator;
++    var cfg = try lanes.Config.init(gpa, .{ .exact_width = 8, .gpu_tokens = true, .hidden_rows = true }, 8, 7);
++    defer cfg.deinit(gpa);
++    var target: lanes.fake.Fake = .{ .gpa = gpa, .prefill_chunks = 1 };
++    defer target.deinit();
++    var clock: lanes.fake.FixedClock = .{};
++    var core = lanes.Engine.init(gpa, &cfg, if (one_pass) target.steppedOne() else target.stepped(), clock.clock());
++    defer core.deinit();
++    var host = LaneHost.init(gpa, std.testing.io, &core, .{ .lanes = 4, .fill_rounds = 4, .fill_drain = fill_drain });
++    const Seen = struct {
++        core: *lanes.Engine,
++        at: [3]u64 = @splat(0),
++        steps: usize = 0,
++        fn call(ctx: *anyopaque, _: *lanes.Stream, _: usize) void {
++            const a: *@This() = @ptrCast(@alignCast(ctx));
++            if (a.steps < a.at.len) a.at[a.steps] = a.core.steps;
++            a.steps += 1;
++        }
++    };
++    var seen: Seen = .{ .core = &core };
++    target.prefill_hook = Seen.call;
++    target.prefill_hook_ctx = &seen;
++    var order: Finished = .{};
++    const prompts = [3][4]u32{ .{ 2, 7, 1, 8 }, .{ 3, 1, 4, 1 }, .{ 1, 6, 1, 8 } };
++    var requests: [3]Request = undefined;
++    const e = host.engine();
++    for (&requests, &prompts, 1..) |*r, *p, id| {
++        r.* = .{ .prompt = p, .max_tokens = 4 };
++        try e.submit(@intCast(id), r, .{ .ctx = &order, .event = Finished.event });
++    }
++    try host.start();
++    defer host.stop();
++    order.wait(3);
++    try std.testing.expectEqual(@as(usize, 3), seen.steps);
++    return seen.at;
++}
++
++test "without fill_drain a burst of short prompts starts a round apart" {
++    const at = try burstSteps(false, 0);
++    try std.testing.expect(at[0] < at[1] and at[1] < at[2]);
++}
++
++test "fill_drain starts a burst of short prompts before the next round, as many rows of them as it allows" {
++    try std.testing.expectEqualSlices(u64, &.{ 0, 0, 0 }, &(try burstSteps(false, 64)));
++    try std.testing.expectEqualSlices(u64, &.{ 0, 0, 0 }, &(try burstSteps(true, 64))); // one pass at a time: admitted after
++    const at = try burstSteps(false, 8); // two 4-token passes fit, the third waits for the next turn
++    try std.testing.expect(at[0] == at[1] and at[2] > at[1]);
++}
+diff --git a/zig/src/families/dsv41/native.zig b/zig/src/families/dsv41/native.zig
+index 8482024..4430674 100644
+--- a/zig/src/families/dsv41/native.zig
++++ b/zig/src/families/dsv41/native.zig
+@@ -90,6 +90,8 @@ pub const Loaded = struct {
+     lane_vision: ?lanes.stream.LaneVision = null,
+     /// The other streams' rounds between two pieces of a prompt pass (TF_FILL_ROUNDS; 0 while passes run whole).
+     fill_rounds: u32 = 0,
++    /// The rows of whole one-step passes started before a round (TF_FILL_DRAIN; 0 while passes run whole).
++    fill_drain: u32 = 0,
+ };
+ 
+ pub const Snaps = struct {
+@@ -181,6 +183,8 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: [
+     if (getenv("TF_FILL_FIRST")) |t| st.lanes.fill_first = std.fmt.parseInt(usize, t, 10) catch return error.BadFill;
+     st.lanes.fill_many = if (getenv("TF_FILL_MANY")) |v| !std.mem.eql(u8, v, "0") else false;
+     const fill_rounds: u32 = if (getenv("TF_FILL_ROUNDS")) |t| std.fmt.parseInt(u32, t, 10) catch return error.BadFill else 4;
++    // TF_FILL_DRAIN=ROWS with TF_FILL_CHUNKS: one-step passes start back to back before a round, ROWS rows at most
++    const fill_drain: u32 = if (getenv("TF_FILL_DRAIN")) |t| std.fmt.parseInt(u32, t, 10) catch return error.BadFill else 0;
+     st.lanes.solo_overhead = if (getenv("TF_DS_SOLO_OVERHEAD")) |v| !std.mem.eql(u8, v, "0") else false;
+     st.lanes.no_copies = if (getenv("TF_DS_NO_COPIES")) |v| !std.mem.eql(u8, v, "0") else false;
+     st.lanes.copy_min = if (getenv("TF_DS_COPY_MIN")) |v| std.fmt.parseInt(u32, v, 10) catch return error.BadCopyMin else 2;
+@@ -196,7 +200,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: [
+     const snaps: Snaps = .{ .ptr = &st.lanes, .bytes = L.snapBytesFn, .save = L.snapSaveFn, .restore = L.snapRestoreFn, .drop = L.snapDropFn, .resumes = L.snapResumesFn, .live = L.snapLiveFn };
+     // a follower that stops stops this server too, with a line that names it, instead of a wait on it for good
+     st.m.watchPeers() catch |err| std.log.warn("dsv41: rank 0 cannot watch its followers: {s}", .{@errorName(err)});
+-    return .{ .backend = st.lanes.backend(), .facts = st.lanes.facts(), .rows = @intCast(st.m.eng.round_rows), .stream_bytes = 0, .ctx = st, .deinit = deinitFn, .snaps = snaps, .lane_vision = if (st.vision) |v| v.hook() else null, .fill_rounds = if (st.lanes.fill_chunks > 0) fill_rounds else 0 };
++    return .{ .backend = st.lanes.backend(), .facts = st.lanes.facts(), .rows = @intCast(st.m.eng.round_rows), .stream_bytes = 0, .ctx = st, .deinit = deinitFn, .snaps = snaps, .lane_vision = if (st.vision) |v| v.hook() else null, .fill_rounds = if (st.lanes.fill_chunks > 0) fill_rounds else 0, .fill_drain = if (st.lanes.fill_chunks > 0) fill_drain else 0 };
+ }
+ 
+ fn deinitFn(ptr: *anyopaque) void {
+diff --git a/zig/src/native/cuda.zig b/zig/src/native/cuda.zig
+index 80f69ab..d50f0ed 100644
+--- a/zig/src/native/cuda.zig
++++ b/zig/src/native/cuda.zig
+@@ -492,6 +492,7 @@ fn openWith(comptime F: type, a: Allocator, gpa: Allocator, io: std.Io, o: api.O
+         .vision = if (@hasField(@TypeOf(loaded), "vision")) vision_offer.offer(loaded.vision) else null,
+         .lane_vision = if (@hasField(@TypeOf(loaded), "lane_vision")) loaded.lane_vision else null,
+         .fill_rounds = if (@hasField(@TypeOf(loaded), "fill_rounds")) loaded.fill_rounds else 0,
++        .fill_drain = if (@hasField(@TypeOf(loaded), "fill_drain")) loaded.fill_drain else 0,
+         .efforts = familyEfforts(F),
+     }, .{ .ctx = loaded.ctx, .text = F.explain });
+     opened = true;

@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.1.0 · 2026-11-10 (later the same day)
+
+- Added `patches/0003-fill-drain-pr51.patch`, OsakaTX's upstream PR #51 rebased onto this engine commit, and the
+  three switches it needs: `TF_FILL_CHUNKS=2 TF_FILL_MANY=1 TF_FILL_DRAIN=8192`.
+- **Cut-in fixed:** a short request sent 3 s into a cold prompt now answers in 1.11 s at 64K and 0.79 s at 150K,
+  against 22.9 s and 33.9 s before. This was the one measured speed gap against the community reference.
+- No cost measured: sustained 8 streams 163.4 (was 163.8), 16 streams 194.9 (was 194.9), TTFT p95 0.77 / 1.82 s
+  (was 0.87 / 2.05), 1M needle exact in 506.0 s (was 510.9), gates 6/6, 131K needle exact.
+- House bench and prefill are unchanged (98.4 / 59.1 / 143.7 from v1.0.0; prefill 2,385 / 2,576 / 2,586 tok/s).
+
 ## v1.0.0 · 2026-11-10
 
 - Initial release: serving kit and measured record for DeepSeek-V4.1-Flash-1017 on two GB10 nodes, 2.7 bpw
