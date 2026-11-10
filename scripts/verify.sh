@@ -17,5 +17,9 @@ run python3 "$TOOLS/needle.py"  --base "$BASE" --model "$MODEL" --lengths 131072
 run python3 "$TOOLS/kit_bench.py" --base "$BASE" --model "$MODEL" decode --set b --tokens 384 --reps 3 --out "$OUT/decode.json"
 run python3 "$TOOLS/kit_bench.py" --base "$BASE" --model "$MODEL" sustained --streams 16 --tokens 256 --set b --seconds 90 --out "$OUT/sustained-16.json"
 
+echo "== cut-in (about 30 s; ~64K prompt):"
+API_URL="$BASE/v1/chat/completions" MODEL="$MODEL" FILLER_WORDS=17000 DELAY_S=3 \
+  python3 "$(dirname "$0")/cutin_probe.py"
+
 echo "== the long gate (about 9 minutes):"
 echo "   python3 $TOOLS/needle.py --base $BASE --model $MODEL --lengths 1040000 --depths 0.5 --out $OUT/needle-1m.json"

@@ -27,7 +27,7 @@ The deeper stack keeps its own credits (the RoCE transport, the kernel kit, the 
 | House bench, 1 stream, 384 tokens, median of 3 | **structured 143.7 · prose 59.1 · coding 98.4 tok/s** (identical texts across reps) |
 | Sustained aggregate, 90 s, set b | 8 streams 163.8 · **16 streams 194.9 tok/s** (+19.0%) |
 | 16-stream capacity | 16 x 131,072-token prompts at once: burst 850.1 s, **17/17 replies identical to their solo runs**, 16/16 needles found |
-| Long context | 1M needle: **1,039,833 prompt tokens, exact in 510.9 s**; 131K needle exact in 51.5 s |
+| Long context | 1M needle: **1,039,833 prompt tokens, exact in 506.0 s**; 131K needle exact in 56.5 s |
 | Load | ~45 s to live; 109.3 GiB active; 9 GiB (head) / 11 GiB (worker) still available |
 | Idle cost | **~1.3-2.4% of one core per node** (100% of a core without the idle-nap patch) |
 | Tool calls | gates 6/6: plain and streamed, no DSML markup leaks into `content` |
@@ -154,7 +154,7 @@ python3 tools/kit_bench.py --base http://127.0.0.1:8888 --model DeepSeek-V4.1-Fl
   sustained --streams 16 --tokens 256 --set b --seconds 90 --out sustained-16.json
 ```
 
-The 1M needle is the gate that matters: it is where the newer v0.7.5 engine panics (see Notes).
+The 1M needle is the gate that matters: it is where the newer v0.7.5 engine panics (see Notes). `scripts/cutin_probe.py` checks the latency claim (`FILLER_WORDS=17000 DELAY_S=3` gives the ~64K shape above).
 
 ## Notes and gotchas
 
