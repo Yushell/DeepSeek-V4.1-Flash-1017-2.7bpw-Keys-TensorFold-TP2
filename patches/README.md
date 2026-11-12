@@ -1,7 +1,8 @@
 # Patches in this folder
 
-`0002-rdma-idle-nap.patch` and `0003-fill-drain-pr51.patch` are the two patches we run beyond the pack's own three.
-Neither is ours; both are reproduced here so the exact served binary is reproducible.
+`0002-rdma-idle-nap.patch`, `0003-fill-drain-pr51.patch` and `0004-serve-keep-logs.patch` are the changes we run beyond
+the pack's own three. The first two are not ours; `0004` targets the recipe's launcher rather than the engine tree. All
+are reproduced here so the exact served tree is reproducible.
 
 ## 0003: fill drain (upstream PR #51)
 
@@ -41,6 +42,20 @@ Neither is ours; both are reproduced here so the exact served binary is reproduc
   Apache-2.0, as TensorFold and that recipe are.
 - **Applies to:** `bertholomus/TensorFold` `deepseek-v41-zig-tp2` @ `a57deb9`, after the pack's
   `zig-tp2-patches/0003`-`0005`. `git apply --check` is clean on an unmodified checkout.
+
+## 0004: the launcher keeps each run's log
+
+- **What:** +17/−2 in the recipe's `scripts/serve.sh`. `stop()` writes the container's own log with docker's
+  timestamps (`tp2-lane.<stamp>.docker.log`) and renames the file the container wrote (`tp2-lane.<stamp>.log`) on
+  each node, then removes the container; `start` calls `stop` first. Diffed with one line of context, so it applies
+  to the upstream v0.7.3 launcher and to one that already carries the GID edits.
+- **Why:** `node_run.sh` starts the container with `--rm` and `tee /logs/tp2-lane.log`. A rank that ends by itself
+  takes its docker log with it, leaving only the tee'd file, and the next start truncates that file. Without this
+  change a restart wipes the only record of the run.
+- **Applies to:** the recipe checkout's `scripts/serve.sh`, not the engine tree; `git apply` is clean on upstream
+  v0.7.3.
+- **Test:** `scripts/test_serve_stop.sh <serve.sh>` runs the shipped `stop()` text against a fake docker: 24 checks
+  fail on the stock launcher and all pass on the patched one.
 
 ## The pack's own three (not reproduced here)
 

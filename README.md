@@ -32,6 +32,7 @@ The deeper stack keeps its own credits (the RoCE transport, the kernel kit, the 
 | Idle cost | **~1.3-2.4% of one core per node** (100% of a core without the idle-nap patch) |
 | Tool calls | gates 6/6: plain and streamed, no DSML markup leaks into `content` |
 | **Cut-in latency** | a short request sent 3 s into a cold prompt answers in **1.11 s at 64K** and **0.79 s at 150K** (22.9 s / 33.9 s without the fill switches) |
+| Kept conversations | a 44K-71K-token conversation resumes in **0.45-1.52 s** after five short side requests and two other long conversations (18.7-28.0 s cold); a new conversation on the same system prompt starts in 1.25 s with its 12,288-token block reused |
 | Quality, seeded panel | 200 MMLU + 100 GSM8K: GSM8K 96.0 off / 98.0 on, MMLU 83.5 off / 90.5 on |
 | Uncensoring | 44-item battery: 44/44 comply, 0 refusals (the stock 1017 pack refused 29 of 40 hostile prompts) |
 | Vision | pass (native tower, 6/6 probes) |
@@ -127,7 +128,7 @@ docker run --rm -v "$PWD:/src" -v /opt/zig:/zig -w /src \
     -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121
 ```
 
-Binaries land in `zig-out/native/bin/tensorfold-native` and `zig-out/bin/` (`tf-dsv41-lanes`, `tf-dsv41-rank-cache`). The recipe's `serve.sh` also wants `--rdma-kernels /engine/rdma_gather.fatbin`; the branch carries the kernels embedded, so drop that flag and its preflight check (we keep the patched `serve.sh` in the vault, not here: it is a two-line change).
+Binaries land in `zig-out/native/bin/tensorfold-native` and `zig-out/bin/` (`tf-dsv41-lanes`, `tf-dsv41-rank-cache`). The recipe's `serve.sh` also wants `--rdma-kernels /engine/rdma_gather.fatbin`; the branch carries the kernels embedded, so drop that flag and its preflight check, and point its preflight at your RoCE v2 GID (3 on our link). Beyond those site edits, `patches/0004-serve-keep-logs.patch` makes `serve.sh stop` keep each run's log in `LOG_DIR` before it removes the container.
 
 Why the two extra patches:
 
@@ -154,7 +155,12 @@ python3 tools/kit_bench.py --base http://127.0.0.1:8888 --model DeepSeek-V4.1-Fl
   sustained --streams 16 --tokens 256 --set b --seconds 90 --out sustained-16.json
 ```
 
-The 1M needle is the gate that matters: it is where the newer v0.7.5 engine panics (see Notes). `scripts/cutin_probe.py` checks the latency claim (`FILLER_WORDS=17000 DELAY_S=3` gives the ~64K shape above).
+The 1M needle is the gate that matters: it is where the newer v0.7.5 engine panics (see Notes). `scripts/cutin_probe.py` checks the latency claim (`FILLER_WORDS=17000 DELAY_S=3` gives the ~64K shape above). `scripts/agent_scenario.py` measures prompt reuse under agent-shaped traffic (three long conversations, one system prompt shared by two of them, five short side requests); it exits 0 only when every returning turn resumed:
+
+```bash
+ENGINE_SRC=<engine checkout>/zig/src/families/dsv41 RECIPE_DIR=. \
+  python3 scripts/agent_scenario.py run1
+```
 
 ## Notes and gotchas
 
@@ -164,9 +170,11 @@ The 1M needle is the gate that matters: it is where the newer v0.7.5 engine pani
 - **`TF_DS_COPY_MIN=3` is deliberate, not a default to lower.** The pack's own A/B: at 2, a 2-token suffix copy took the round from the draft head on repetitive text and held depth at 1 (78.4 tok/s geomean over six seeds); at 3 it reads 89.8, and the file-rewrite case stays level. Turning copies off entirely (`TF_DS_NO_COPIES=1`) lifted the repetitive seeds too but cost that rewrite 7.6-11.6%.
 - **`TF_DS_NO_COPIES` / `TF_DS_SOLO_OVERHEAD` are a wash here.** Upstream's own A/B on this engine line reads +1.2% code and +2.2% structured for copies-off on one bench set, flat on the other, with a third pair reporting -5.9% on repetitive prompts. There is an open issue for the underlying round-count difference; nothing worth a lane change.
 - **The window is the memory.** 3,932,160 positions with 16 streams leaves 9 GiB on the head and 11 GiB on the worker. Do not grow the window on this pack, and do not run a second lane beside it.
+- **Kept conversations hold rows in that window, and that is why agent traffic stays fast.** A kept prompt state's compressed rows stay in place: a new stream is placed clear of kept states plus growth room (`placeSoft`), and a state is overwritten only when the window has no other room, oldest first, with a log line (`the kept state of N tokens at B goes stale`). Resumes sit on the 2,048-row grid, so a returning turn re-reads up to about 2K tokens. A shared system block is kept as its own mark, so a new conversation on a known system prompt and tool set starts warm. Real chat text reads about 10% slower than `kit_bench prefill`'s random words here (2,320-2,430 against 2,584 tok/s at 65K) because it reads about 12% more Engram bytes; quote each figure with its shape.
 - **24 streams is untested, 32 is off the table** until the v0.7.5 panic has a fix. 16 x 131K is the proven capacity point.
 - **Prefill is one pass at a time per stream.** A short request sent into a long cold prompt is admitted between the pass's pieces (see the `TF_FILL_*` note below), so it no longer waits for the whole prompt.
 - **Vision is a load-time template check.** `--vision` requires the media-reminder branch in `chat_template.jinja`; use the recipe's template (as above), not a fine-tune's.
+- **The launcher's log is written over at every start.** `node_run.sh` runs the container with `--rm` and `tee /logs/tp2-lane.log`: a rank that ends by itself takes its docker log with it, leaving only that file, and the next start truncates it. `patches/0004-serve-keep-logs.patch` keeps the previous run's two files under a timestamp before the container is removed, and `scripts/test_serve_stop.sh <serve.sh>` checks it offline against a fake docker.
 - **The three `TF_FILL_*` switches are the latency fix, not a throughput one.** `TF_FILL_CHUNKS=2` runs a prompt pass two chunks at a time, `TF_FILL_MANY=1` admits a new request between pieces, and `TF_FILL_DRAIN=8192` starts a burst's whole one-step passes back to back. Without them a short request behind a 64K cold prompt waits the whole prompt (22.9 s here); with them it answers in 1.11 s. Burst rates and prefill are unchanged in our measurements; `TF_FILL_MANY` without `DRAIN` is the bad combination (-36-38% on a burst of eight short requests), so never set one without the other.
 - **Not affiliated** with any upstream authors; see Credits for the full attribution and licenses.
 

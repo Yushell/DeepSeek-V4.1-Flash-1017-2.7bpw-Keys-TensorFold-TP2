@@ -1,0 +1,32 @@
+diff --git a/scripts/serve.sh b/scripts/serve.sh
+index 94d1fde..d54fb6f 100644
+--- a/scripts/serve.sh
++++ b/scripts/serve.sh
+@@ -9,3 +9,3 @@
+ #                               runs it first and starts nothing when one is missing
+-#   scripts/serve.sh stop       remove tp2-lane on the two nodes
++#   scripts/serve.sh stop       keep each node's log of the run in LOG_DIR, then remove tp2-lane on the two nodes
+ #   scripts/serve.sh check      exit 0 when rank 0 lists the model and answers a 4-token chat
+@@ -102,5 +102,20 @@ check() {
+ }
++# Before a lane is removed, each node keeps that run's output in LOG_DIR. While the container is still there, its own
++# log with docker's time on every line goes to tp2-lane.<stamp>.docker.log, and the file the container wrote goes to
++# tp2-lane.<stamp>.log (node_run.sh starts the container with --rm, so after a rank that ended by itself that file is
++# all there is, and the next start would write over it). A node that cannot keep them is stopped all the same; the
++# return is 1 when a node could not be reached.
+ stop() {
+-  local h
+-  for h in "${N[@]}"; do on "$h" "docker rm -f tp2-lane >/dev/null 2>&1; true"; done
++  local h rc=0
++  for h in "${N[@]}"; do
++    via "$h" "bash -s -- '$LOG_DIR'" <<'EOF' || rc=1
++d=$1; s=$(date +%Y%m%d-%H%M%S)
++if [ -d "$d" ]; then
++  if docker inspect tp2-lane >/dev/null 2>&1; then docker logs -t tp2-lane > "$d/tp2-lane.$s.docker.log" 2>&1; fi
++  if [ -s "$d/tp2-lane.log" ]; then mv "$d/tp2-lane.log" "$d/tp2-lane.$s.log"; fi
++fi
++docker rm -f tp2-lane >/dev/null 2>&1; true
++EOF
++  done
++  return $rc
+ }

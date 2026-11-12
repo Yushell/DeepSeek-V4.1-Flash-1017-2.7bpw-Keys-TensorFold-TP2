@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.2.0 · 2026-11-12
+
+- Added `patches/0004-serve-keep-logs.patch`: `serve.sh stop` keeps each node's run log (the container's own log with
+  docker's timestamps, and the file the container wrote) before it removes the container, so a restart no longer
+  wipes the only record of the previous run. `scripts/test_serve_stop.sh` checks it offline against a fake docker.
+- Added `scripts/agent_scenario.py`: prompt reuse under agent-shaped traffic (three long conversations, one system
+  prompt shared by two, five short side requests). Measured here: **7 of 7 returning turns resumed** their kept
+  state, first token **0.45-1.52 s** against 18.7-28.0 s cold at 44K-71K tokens; a new conversation on the same
+  system prompt starts in 1.25 s with its 12,288-token block reused.
+- README: the kept-conversation row in Results, a note on how the window holds kept states and why real chat text
+  reads about 10% slower than the random-word prefill bench, and the launcher's log behaviour.
+
 ## v1.1.0 · 2026-11-10 (later the same day)
 
 - Added `patches/0003-fill-drain-pr51.patch`, OsakaTX's upstream PR #51 rebased onto this engine commit, and the
