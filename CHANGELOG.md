@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.2.1 · 2026-11-12
+
+- Measured the 16 x 131K capacity burst on the fill build: every gate passes (17/17 replies equal to solo, 16/16
+  needles in both phases, drafted reply equals the serial one), burst **992.4 s** against 850.1 s on the pre-fill
+  build. The README row now quotes this build's number, and Notes explains the comparison: part of the gap is one
+  fewer full prefill in the older run (a duplicate prompt resumed its twin's 129,024 tokens there), the rest is the
+  interleaving of 16 cold prompts' pieces. Single-prompt and sustained rows are unchanged.
+
 ## v1.2.0 · 2026-11-12
 
 - Added `patches/0004-serve-keep-logs.patch`: `serve.sh stop` keeps each node's run log (the container's own log with

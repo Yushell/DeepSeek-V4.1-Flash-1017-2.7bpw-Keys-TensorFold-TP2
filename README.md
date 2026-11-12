@@ -26,7 +26,7 @@ The deeper stack keeps its own credits (the RoCE transport, the kernel kit, the 
 |---|---|
 | House bench, 1 stream, 384 tokens, median of 3 | **structured 143.7 · prose 59.1 · coding 98.4 tok/s** (identical texts across reps) |
 | Sustained aggregate, 90 s, set b | 8 streams 163.4 · **16 streams 194.9 tok/s (+19%)** |
-| 16-stream capacity | 16 x 131,072-token prompts at once: burst 850.1 s, **17/17 replies identical to their solo runs**, 16/16 needles found |
+| 16-stream capacity | 16 x 131,072-token prompts at once: burst **992.4 s** on this build, **17/17 replies identical to their solo runs**, 16/16 needles found (850.1 s on the pre-fill build; see Notes) |
 | Long context | 1M needle: **1,039,833 prompt tokens, exact in 506.0 s**; 131K needle exact in 56.5 s |
 | Load | ~45 s to ready; 109.3 GiB active; 9 GiB (head) / 11 GiB (worker) still available |
 | Idle cost | **~1.3-2.4% of one core per node** (100% of a core without the idle-nap patch) |
@@ -175,6 +175,7 @@ ENGINE_SRC=<engine checkout>/zig/src/families/dsv41 RECIPE_DIR=. \
 - **Prefill is one pass at a time per stream.** A short request sent into a long cold prompt is admitted between the pass's pieces (see the `TF_FILL_*` note below), so it no longer waits for the whole prompt.
 - **Vision is a load-time template check.** `--vision` requires the media-reminder branch in `chat_template.jinja`; use the recipe's template (as above), not a fine-tune's.
 - **The launcher's log is written over at every start.** `node_run.sh` runs the container with `--rm` and `tee /logs/tp2-lane.log`: a rank that ends by itself takes its docker log with it, leaving only that file, and the next start truncates it. `patches/0004-serve-keep-logs.patch` keeps the previous run's two files under a timestamp before the container is removed, and `scripts/test_serve_stop.sh <serve.sh>` checks it offline against a fake docker.
+- **The 16-way cold burst is where the fill switches cost something.** 16 x 131K prompts sent together complete in **992.4 s** on this build against 850.1 s on the pre-fill build, with every correctness gate still green (17/17 replies equal to solo, 16/16 needles in both phases). Part of the gap is one fewer full prefill in the older run: there a duplicate prompt resumed its twin's 129,024 cached tokens, here none did, about 6% more work. The rest is the interleaving of 16 cold prompts' pieces. Single-prompt and sustained rows are unchanged (1M needle 506.0 s, 16 streams 194.9 tok/s). If your workload is many agents starting at once with six-figure contexts, measure it on your pair; a boot without `TF_FILL_*` is the A/B.
 - **The three `TF_FILL_*` switches are the latency fix, not a throughput one.** `TF_FILL_CHUNKS=2` runs a prompt pass two chunks at a time, `TF_FILL_MANY=1` admits a new request between pieces, and `TF_FILL_DRAIN=8192` starts a burst's whole one-step passes back to back. Without them a short request behind a 64K cold prompt waits the whole prompt (22.9 s here); with them it answers in 1.11 s. Burst rates and prefill are unchanged in our measurements; `TF_FILL_MANY` without `DRAIN` is the bad combination (-36-38% on a burst of eight short requests), so never set one without the other.
 - **Not affiliated** with any upstream authors; see Credits for the full attribution and licenses.
 
