@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.2.2 · 2026-11-12
+
+- Ran the fill-switch A/B on the 16 x 131K capacity burst, from a fresh boot with an empty prompt cache each arm:
+  **992.4 s with `TF_FILL_*`, 868.8 s without**, every gate green in both (17/17 replies equal to solo, 16/16
+  needles in both phases, the drafted reply equals the serial one). Wall time for the same 17-prompt set is 14.2%
+  longer with the switches; per prompt token the prefill runs 2,245 against 2,416 tok/s (7.1% slower), because the
+  switches-off arm's duplicate prompt resumed its twin's 129,024 tokens (2,099,200 against 2,228,224 prompt tokens).
+  The pre-fill build's 850.1 s matches the switches-off arm within 2.2%; solo, single-prompt and sustained rows are
+  level. README's burst row and Notes now carry both arms.
+
 ## v1.2.1 · 2026-11-12
 
 - Measured the 16 x 131K capacity burst on the fill build: every gate passes (17/17 replies equal to solo, 16/16
