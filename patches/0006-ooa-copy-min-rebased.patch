@@ -1,0 +1,98 @@
+Patch for bertholomus/TensorFold, branch deepseek-v41-zig-tp2 @ c9c70953 (TensorFold, Apache-2.0),
+rebased from the pack's zig-tp2-patches/0004-copy-min.patch (Object-Oriented Architects, 2026-10).
+
+The pack's 0004 does not apply as shipped on this pin: its native.zig hunk's context moved.
+Here config.zig, windows.zig and lanes.zig apply verbatim, and native.zig carries the same two
+additions by hand (the TF_DS_COPY_MIN doc lines and its env parse).
+
+diff --git a/zig/src/core/lanes/config.zig b/zig/src/core/lanes/config.zig
+index 0a5d1fa..e8f3ad4 100644
+--- a/zig/src/core/lanes/config.zig
++++ b/zig/src/core/lanes/config.zig
+@@ -14,6 +14,7 @@ pub const default_prior = [_]f64{ 0.85, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.5, 0.
+ pub const Model = struct {
+     solo_head_overhead_ms: ?f64 = null, // fixed overhead for a lone head window; null keeps the live estimate
+     copy_proposals: bool = true, // suffix-lookup copy windows; false opts a backend out
++    copy_min: u32 = 2, // a copy window's fewest tokens to take a round from the draft head
+     exact_width: u32 = 1, // the widest window that reproduces one-token steps bit for bit
+     first_copy_rows: u32 = 0, // a lone stream's first copy window (0: the exact width)
+     gpu_tokens: bool = false, // one-token rounds may run a step ahead (pipelined)
+@@ -41,6 +42,7 @@ pub const Model = struct {
+ pub const Config = struct {
+     solo_head_overhead_ms: ?f64 = null, // fixed overhead for a lone head window; null keeps the live estimate
+     copy_proposals: bool = true, // suffix-lookup copy windows; false opts a backend out
++    copy_min: u32 = 2, // Model.copy_min
+     family_width: u32,
+     max_copy: u32,
+     first_copy: u32,
+@@ -130,6 +132,7 @@ pub const Config = struct {
+             .k = .{ .depth_rate = if (m.depth_rate > 0) m.depth_rate else (Constants{}).depth_rate },
+             .solo_head_overhead_ms = m.solo_head_overhead_ms,
+             .copy_proposals = m.copy_proposals,
++            .copy_min = @max(2, m.copy_min),
+         };
+     }
+ 
+diff --git a/zig/src/core/lanes/windows.zig b/zig/src/core/lanes/windows.zig
+index c44c29d..e816dc5 100644
+--- a/zig/src/core/lanes/windows.zig
++++ b/zig/src/core/lanes/windows.zig
+@@ -167,14 +167,15 @@ fn headTrunk(e: *Engine, s: *Stream, p: Plan, levels: usize) !?fill.Trunk {
+ }
+ 
+ /// A copy from the context backed by `enter_match` ids (Python `_copy_proposal`), else Recall's when it should pay.
+-/// Without copy_proposals (TF_DS_NO_COPIES=1 on a drafted DeepSeek stream) the suffix-lookup copies are skipped.
++/// Without copy_proposals (TF_DS_NO_COPIES=1 on a drafted DeepSeek stream) the suffix-lookup copies are skipped; a copy
++/// shorter than copy_min (TF_DS_COPY_MIN) leaves the round to the draft head.
+ pub fn copyProposal(e: *Engine, s: *Stream) !Copy {
+     if (e.cfg.max_copy == 0 or s.force.items.len > 0) return .{};
+     const width: u32 = if (e.alone) (s.copy_width orelse e.cfg.first_copy) else e.cfg.first_copy;
+     const most = @min(@as(i64, width), s.draftRoom() - 1);
+     if (s.proposer) |p| if (copyAllowed(e.cfg.copy_proposals, e.cfg.max_copy, s.force.items.len) and (!e.alone or e.cfg.lone_copies)) {
+         const copied = p.propose(s.context.items, most) catch &.{};
+-        if (copied.len >= 2 and p.lastMatch() >= e.cfg.enter_match) return .{ .tokens = copied };
++        if (copied.len >= e.cfg.copy_min and p.lastMatch() >= e.cfg.enter_match) return .{ .tokens = copied };
+     };
+     const r = s.recall orelse return .{};
+     if (most < 2) return .{};
+diff --git a/zig/src/families/dsv41/lanes.zig b/zig/src/families/dsv41/lanes.zig
+index 9c3ce3e..a7e089d 100644
+--- a/zig/src/families/dsv41/lanes.zig
++++ b/zig/src/families/dsv41/lanes.zig
+@@ -413,6 +413,7 @@ pub const Lanes = struct {
+     served_k: enum { off, all, solo } = .off,
+     solo_overhead: bool = false, // TF_DS_SOLO_OVERHEAD=1: a lone drafted stream's head windows cost the fixed draft allowance
+     no_copies: bool = false, // TF_DS_NO_COPIES=1: a drafted stream proposes no suffix-lookup copy windows
++    copy_min: u32 = 2, // TF_DS_COPY_MIN=N: a copy window takes a drafted stream's round from the head at N tokens or more
+     drawn: [ring]u32 = undefined,
+     next: u64 = 0,
+     snaps: std.ArrayList(*Snap) = .empty, // kept prompt states, oldest first
+@@ -579,6 +580,7 @@ pub const Lanes = struct {
+             .mtp_step_ms = draft.draft_ms,
+             .solo_head_overhead_ms = if (drafting and self.solo_overhead) draft.draft_ms else null, // opt-in: the Python engine's fixed draft allowance
+             .copy_proposals = !(drafting and self.no_copies), // opt-in: the draft head proposes; the Python engine makes no copies either
++            .copy_min = if (drafting) self.copy_min else 2,
+             .streams_exact = true,
+             .hidden_rows = true,
+             .batch_rows = @intCast(self.m.eng.round_rows),
+diff --git a/zig/src/families/dsv41/native.zig b/zig/src/families/dsv41/native.zig
+index 3989f59..8b4956a 100644
+--- a/zig/src/families/dsv41/native.zig
++++ b/zig/src/families/dsv41/native.zig
+@@ -36,6 +36,8 @@
+ //!                                               its pass runs between the other's pieces (fewest tokens left first)
+ //!   TF_DS_SOLO_OVERHEAD=1                       a lone drafted stream's head windows cost the fixed draft allowance
+ //!   TF_DS_NO_COPIES=1                           a drafted stream proposes no suffix-lookup copy windows
++//!   TF_DS_COPY_MIN=N                            a copy window takes a drafted stream's round from the draft head only
++//!                                               at N tokens or more (2 unless set; copies are 5 at most)
+ //!   TF_DS_PASS_ROWS=N, TF_DS_PASS_FROM=P        a prompt pass's rows at most (a multiple of 2,048 up to the build's
+ //!                                               pass rows), passes of 2,048 below position P (8192 unless set)
+ //! The kernel set (TENSORFOLD_CUDA_KERNELS) is the recorded Triton set (aot_pack.py). The pool holds --context
+@@ -185,6 +187,7 @@ pub fn open(gpa: std.mem.Allocator, io: std.Io, ctx: *const cuda.Context, dir: [
+     const fill_drain: u32 = if (getenv("TF_FILL_DRAIN")) |t| std.fmt.parseInt(u32, t, 10) catch return error.BadFill else 0;
+     st.lanes.solo_overhead = if (getenv("TF_DS_SOLO_OVERHEAD")) |v| !std.mem.eql(u8, v, "0") else false;
+     st.lanes.no_copies = if (getenv("TF_DS_NO_COPIES")) |v| !std.mem.eql(u8, v, "0") else false;
++    st.lanes.copy_min = if (getenv("TF_DS_COPY_MIN")) |v| std.fmt.parseInt(u32, v, 10) catch return error.BadCopyMin else 2;
+     if (getenv("TF_DS_PASS_ROWS")) |t| st.lanes.pass_rows = try passRows(t);
+     if (getenv("TF_DS_PASS_FROM")) |t| st.lanes.pass_from = std.fmt.parseInt(usize, t, 10) catch return error.BadPassRows;
+     // a vision checkpoint's tower on this rank, from the kit's vision/ (torch's attention cubin, the routing bias)

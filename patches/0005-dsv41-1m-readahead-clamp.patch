@@ -1,0 +1,11 @@
+--- a/zig/src/families/dsv41/model.zig
++++ b/zig/src/families/dsv41/model.zig
+@@ -719,7 +719,7 @@
+                         ahead = std.Thread.spawn(.{}, prompt.engramReadAhead, .{ eh, c, seq, start, n, j + 1 }) catch null;
+                 } else if (m.fill_seq.len > start + n and m.fill_seq.ptr == seq.ptr) {
+                     // the next chunk's rows while this one's layers run
+-                    const nn = @min(m.next_rows, m.fill_seq.len - start - n);
++                    const nn = @min(@min(m.next_rows, m.fill_seq.len - start - n), chunk_rows); // the read-ahead buffers hold chunk_rows rows
+                     eh.ahead_start = start + n;
+                     eh.ahead_n = nn;
+                     eh.ahead_ready = .{ false, false };

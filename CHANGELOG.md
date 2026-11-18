@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.3.0 · 2026-11-17
+
+- Moved the pin to the v0.7.5 branch, `c9c70953` (v0.7.5 with PR #51 merged), and added
+  `patches/0005-dsv41-1m-readahead-clamp.patch`: a one-line clamp that fixes the Engram read-ahead panic at a 1M
+  prompt (`index 50225232, len 196608`). `0003-fill-drain-pr51.patch` is retired because PR #51 is in the pin.
+- Serving shape: **32 streams, 64-row rounds, 5,242,880-position window** (was 16 / 32 / 3,932,160), with
+  `TF_DS_ROUND_MS` and the v0.7.5 kit's cubins for rows 49-64.
+- Measured on the 2x GB10 pair: house bench **143.8 / 58.8 / 98.4 tok/s** (structured / prose / coding); sustained
+  90 s set b **164.4 / 209.5 / 241.6 tok/s at 8 / 16 / 32 streams** (+6.9% at 16 over the v0.7.3 build's 194.9;
+  32 streams is a new tier); 1M needle **1,048,407 tokens exact in 518.9 s**; 16 x 131,072-token burst **17/17
+  replies equal to solo, 16/16 needles, all 16 states kept**, 1,001.1 s; boot ~34 s, 110.3 GiB active, ~8 GiB free
+  on the head at the lowest; idle ~2.5% of a core per node.
+- Config A/B round: `TF_DS_COPY_MIN` at 2 / 3 / 5 is a wash (99.15 / 59.26 / 144.25, 98.53 / 58.95 / 144.41,
+  99.03 / 59.33 / 144.35), so 3 stays; `--prompt-cache-gib 4` measured identical to 2 (7/7 resumes, 9,361 fresh
+  tokens, 6.71 against 6.72 s), so 2 stays; the 5,242,880 window is kept (+33% capacity, +1.7% at 32 streams, 1M
+  needle and the 16-way burst green); `TF_DS_PASS_ROWS` above 4,096 is refused by the binary's `passRows` check.
+- README: results table, build steps (`zig build install native` is the step that produces `tensorfold-native`),
+  patch set and notes updated to the new pin and shape.
+
 ## v1.2.2 · 2026-11-12
 
 - Ran the fill-switch A/B on the 16 x 131K capacity burst, from a fresh boot with an empty prompt cache each arm:
