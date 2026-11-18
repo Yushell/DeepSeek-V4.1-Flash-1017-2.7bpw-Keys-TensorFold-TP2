@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.1 · 2026-11-17
+
+- Added a `Quality benchmarks` section to the README: the seeded MMLU (200) and GSM8K (100) panel with its method and
+  95% Wilson intervals, thinking off and on (MMLU 83.5% / 90.5%, GSM8K 96.0% / 98.0%), the 44-item uncensoring
+  battery (44/44), and an explicit note that no full open-source suite has been run against this recipe.
+
 ## v1.3.0 · 2026-11-17
 
 - Moved the pin to the v0.7.5 branch, `c9c70953` (v0.7.5 with PR #51 merged), and added

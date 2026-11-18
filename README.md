@@ -39,6 +39,19 @@ The deeper stack keeps its own credits (the RoCE transport, the kernel kit, the 
 | Vision | pass (native tower, 6/6 probes) |
 | Disk | 198.8 GB pack + 190 GB Engram + ~93 GB rank cache per node |
 
+## Quality benchmarks
+
+The two quality rows above are one fixed, seeded probe, measured on this pack and graft against the v0.7.3 build; the v0.7.5 engine change is quality-neutral in the gates (drafted replies byte-identical to serial):
+
+| Probe | n | Thinking off | Thinking on |
+|---|---|---|---|
+| MMLU (seeded subset, seed 20261004) | 200 | 83.5% (95% CI 77.7-88.0) | 90.5% (85.6-93.8) |
+| GSM8K (seeded subset, seed 20261004) | 100 | 96.0% (90.2-98.4) | 98.0% (93.0-99.4) |
+
+- Method: greedy, one question per request, exact-match answer parsing, Wilson intervals; the run records unparsed and length-cut counts (`local.json`: 1 unparsed / 1 cut on MMLU off, 3 / 3 on, 0 on both GSM8K arms).
+- Uncensoring: 44-item refusal battery, **44/44 comply, 0 refusals**; the stock 1017 pack refused 29 of 40 hostile prompts on the same class of prompts.
+- **Not covered here:** a full open-source suite (MMLU 14k, HumanEval+/MBPP, BFCL, IFEval) has not been run against this recipe. The seeded panel is a quick regression check, not a leaderboard claim.
+
 ## What is in the pack
 
 | Part | Format |
