@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.4.0 · 2026-11-17
+
+- Ran the fixed open-source quality panel against this build and added it to the README: **MMLU 50 = 0.860**,
+  **AIME 2025 10 = 1.000**, **HumanEval 50 pass@1 = 0.980**, **BFCL 50 = 0.900** (stderr 0.043). Temperature 0, lane
+  default thinking, each test alone, every sampler held to two connections or fewer; `simple_evals` for MMLU and
+  HumanEval, Inspect for AIME and BFCL.
+- The notes record the ceilings (AIME at 10 questions, HumanEval at 98%) and the omissions (IFEval, full 14k MMLU,
+  MBPP+) so the row is not over-read.
+
 ## v1.3.1 · 2026-11-17
 
 - Added a `Quality benchmarks` section to the README: the seeded MMLU (200) and GSM8K (100) panel with its method and

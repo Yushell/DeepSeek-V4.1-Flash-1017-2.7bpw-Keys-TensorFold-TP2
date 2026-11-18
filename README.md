@@ -50,7 +50,22 @@ The two quality rows above are one fixed, seeded probe, measured on this pack an
 
 - Method: greedy, one question per request, exact-match answer parsing, Wilson intervals; the run records unparsed and length-cut counts (`local.json`: 1 unparsed / 1 cut on MMLU off, 3 / 3 on, 0 on both GSM8K arms).
 - Uncensoring: 44-item refusal battery, **44/44 comply, 0 refusals**; the stock 1017 pack refused 29 of 40 hostile prompts on the same class of prompts.
-- **Not covered here:** a full open-source suite (MMLU 14k, HumanEval+/MBPP, BFCL, IFEval) has not been run against this recipe. The seeded panel is a quick regression check, not a leaderboard claim.
+- **Not covered here:** the fixed open-source panel below was run (MMLU 50, AIME 10, HumanEval 50, BFCL 50); the full 14k MMLU, MBPP+/HumanEval+ and IFEval were not.
+
+## Open-source quality panel
+
+Run 2026-11-17 against the v0.7.5 build, temperature 0, lane default thinking, each test alone and every sampler held to two connections or fewer:
+
+| Test | N | Score |
+|---|---|---|
+| MMLU | 50 | 0.860 |
+| AIME 2025 | 10 | 1.000 |
+| HumanEval (pass@1) | 50 | 0.980 |
+| BFCL | 50 | 0.900 (stderr 0.043) |
+
+- Harness: `simple_evals` for MMLU and HumanEval, Inspect (`inspect_evals/aime2025`, `inspect_evals/bfcl`) at `--max-connections 1`; HumanEval runs under `spawn` because of the filelock fork audit.
+- Read them with their N: AIME at 10 questions and HumanEval at 98% sit near a ceiling and separate models poorly; the MMLU and BFCL rows carry the information. IFEval is omitted (optional dependency plus a known metric stall), and no full 14k MMLU or MBPP+ run exists for this recipe.
+- Raw logs: the panel workspace's `runs/dsv41-27-v075-20261117/` (one log and exit code per row, Inspect `.eval` files for AIME and BFCL).
 
 ## What is in the pack
 
