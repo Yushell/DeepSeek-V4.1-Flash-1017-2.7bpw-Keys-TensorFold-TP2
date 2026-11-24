@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.5.0 · 2026-11-24
+
+- Added `patches/0007-capture-join-issue31.patch`: bertholomus's `fix/tp2-31-capture-join` fix (commit `a8ff91e`).
+  A decode stretch that fails before its two side streams join now joins them, ends the capture and reports the body
+  error instead of leaving `CUDA_ERROR_STREAM_CAPTURE_UNJOINED (904)` poisoning every later request.
+- Added `patches/0008-rdma-gid-env.patch`: `TF_RDMA_GID_INDEX` for the ring's queue pairs (unset keeps 5), a local port
+  of PR #58. The RoCE v2 IPv4 GID index moves with the address assignment order, so a hardcoded index is a reboot trap.
+- Added `patches/0009-serve-gid-discovery.patch`: the launcher discovers the device's RoCE v2 IPv4 GID on every boot and
+  sets `NCCL_IB_GID_INDEX`, `TF_DS_NEIGHBOR_GID_INDEX` and `TF_RDMA_GID_INDEX` from it; the preflight checks that index
+  on both nodes. `config.env.example` no longer carries a fixed neighbor index.
+- Added `TF_FILL_ROUNDS=32` to the config: with another stream live, each prompt piece is followed by 32 of that
+  stream's rounds. Measured beside a cold 99,840-token prompt: **1.2 chunks/s at the default 4, 4.2 at 16, 7.6 at 32**,
+  with the prompt at 44.2 / 49.5 / 58.1 s. No cost when nothing else is decoding.
+- The README now records the MTU companion: both CX7 rails need `mtu 4500` (RoCE `active_mtu` 4096) persisted across
+  reboots; a reset to 1500 produces `VerbsFailed` and the 904 above.
+- Measured on this build: house bench **148.0 / 61.1 / 102.5 tok/s** (structured / prose / coding; 146.8 / 60.4 / 100.8
+  after a 2 h soak, within 1.5%); 2 h at 32 streams **6,259 requests, 222.0 t/s aggregate**, per-stream p50 7.15,
+  TTFT p50 0.375 s / p95 0.55 s, memory flat, 87 C, no throttle reason; warm restart `loaded in 33.0 s` (37 s to the
+  chat check).
+
 ## v1.4.0 · 2026-11-17
 
 - Ran the fixed open-source quality panel against this build and added it to the README: **MMLU 50 = 0.860**,

@@ -4,7 +4,7 @@ A serving recipe and measured record for **DeepSeek-V4.1-Flash-1017** on two GB1
 
 Everything below was measured on a 2x GB10 pair (128 GB unified memory each, two RoCE rails) in November 2026. The lane answers on `:8888` as `DeepSeek-V4.1-Flash-TF`.
 
-**The weights are not hosted here** (198.8 GB pack + 190 GB Engram). This repo is the serving kit, the engine build record (including the three patches we run beyond the pack's own), and the numbers.
+**The weights are not hosted here** (198.8 GB pack + 190 GB Engram). This repo is the serving kit, the engine build record (including the patches we run beyond the pack's own), and the numbers.
 
 ## Credits and attributions
 
@@ -14,6 +14,8 @@ Credit where it is due, all links:
 - **The 2.7 bpw pack**: [object-oriented-architects](https://huggingface.co/object-oriented-architects) built [DeepSeek-V4.1-Flash-1017-EXL3-2.7bpw-TensorFold](https://huggingface.co/object-oriented-architects/DeepSeek-V4.1-Flash-1017-EXL3-2.7bpw-TensorFold) (MIT), a sensitivity-allocated EXL3 pack, and publishes the three engine patches (`zig-tp2-patches/0003`-`0005`) this build applies.
 - **The abliteration graft**: [drowzeys](https://huggingface.co/drowzeys) publishes [keys-DeepSeek-V4.1-Flash-1017-Abliterated](https://huggingface.co/drowzeys/keys-DeepSeek-V4.1-Flash-1017-Abliterated) (MIT), the `exl3_wo_b_l10_35_mia29` sidecar and `apply_mia29_wo_b_graft.py`.
 - **The serving engine**: [bertholomus](https://github.com/bertholomus) maintains the [TensorFold](https://github.com/bertholomus/TensorFold) two-node branch (`deepseek-v41-zig-tp2`, pinned here at [`c9c70953`](https://github.com/bertholomus/TensorFold/tree/c9c709534d0fa64cd62bded064e929df6f8f797d), v0.7.5 with PR #51 merged) and the [two-Spark recipe](https://github.com/bertholomus/deepseek-v4.1-tensorfold-tp2-2xgb10) (v0.7.5) this kit plugs into. Upstream: [ashhart/TensorFold](https://github.com/ashhart/TensorFold) and the TensorFold contributors.
+- **The capture-join fix** (`patches/0007`): [bertholomus](https://github.com/bertholomus)'s branch [`fix/tp2-31-capture-join`](https://github.com/bertholomus/TensorFold/tree/fix/tp2-31-capture-join), commit `a8ff91e`, filed under [recipe issue #31](https://github.com/bertholomus/deepseek-v4.1-tensorfold-tp2-2xgb10/issues/31). Apache-2.0.
+- **The GID env** (`patches/0008`): a local port of [bertholomus PR #58](https://github.com/bertholomus/TensorFold/pull/58).
 - **The idle-nap patch**: [wiseares](https://github.com/wiseares) ported it to the two-node branch and attached it to [recipe issue #32](https://github.com/bertholomus/deepseek-v4.1-tensorfold-tp2-2xgb10/issues/32); the original nap is [willjriley](https://github.com/willjriley)'s [PR #27](https://github.com/bertholomus/TensorFold/pull/27), and the Zig port lineage is [MiaAI-Lab](https://github.com/MiaAI-Lab)'s `0010-rdma-idle-nap.patch`.
 - **The fill-drain patch** (`TF_FILL_DRAIN`, the cut-in fix): [OsakaTX](https://github.com/OsakaTX)'s [PR #51](https://github.com/bertholomus/TensorFold/pull/51), now merged into the pinned engine commit (the kit carried a rebased copy on the older pin).
 - **The 1M Engram read-ahead clamp** (`patches/0005`): this repo's own one-line fix for v0.7.5's panic at a 1M prompt; see `patches/README.md` for the failure and the measurement.
@@ -25,7 +27,10 @@ The deeper stack keeps its own credits (the RoCE transport, the kernel kit, the 
 
 | Metric | Result |
 |---|---|
-| House bench, 1 stream, 384 tokens, median of 3 | **structured 143.8 · prose 58.8 · coding 98.4 tok/s** (identical texts across reps) |
+| House bench, 1 stream, 384 tokens, median of 3 | **structured 148.0 · prose 61.1 · coding 102.5 tok/s** (identical texts across reps; 146.8 · 60.4 · 100.8 after a 2 h soak, within 1.5%) |
+| Decoder share, live chat beside a cold 99,840-token prompt | 1.2 chunks/s at `TF_FILL_ROUNDS=4` (default) · **4.2 at 16** · **7.6 at 32**; the prompt takes 44.2 / 49.5 / **58.1** s. No cost when nothing else decodes. |
+| Soak, 32 streams, 2 h | 6,259 requests · **222.0 t/s aggregate** · per-stream p50 7.15 · TTFT p50 0.375 s / p95 0.55 s; memory flat (head 8.73 → 8.67 GiB mean), 87 C max, no throttle reason |
+| Warm restart | **loaded in 33.0 s**, 37 s to the chat check; both ranks carry `TF_FILL_ROUNDS=32` and `TF_RDMA_GID_INDEX=4` |
 | Sustained aggregate, 90 s, set b | 8 streams 164.4 · 16 streams **209.5** · **32 streams 241.6 tok/s** |
 | 16-stream capacity | 16 x 131,072-token prompts at once, 32-stream shape: burst **1,001.1 s**, **17/17 replies identical to their solo runs**, 16/16 needles found, all 16 states kept (129,024 cached tokens each) |
 | Long context | 1M needle: **1,048,407 prompt tokens, exact in 518.9 s** |
@@ -140,11 +145,9 @@ git apply /mnt/models/dsv41-27-source/zig-tp2-patches/0003-request-limits.patch
 git apply patches/0006-ooa-copy-min-rebased.patch
 git apply /mnt/models/dsv41-27-source/zig-tp2-patches/0005-upstream-picks.patch
 
-# 3. our GID index (four hardcoded 5s -> 3; check your own link first)
-#    rdma.zig default, model.zig (2 sites), layer_main.zig (1 site)
-grep -rn "gid_index = 5\|gid_index: u8 = 5" zig/src/families/dsv41/
-
-# 4. the patches this kit adds: the idle nap and the 1M read-ahead clamp
+# 3. the patches this kit adds: the GID env, the capture-join fix, the idle nap and the 1M clamp
+git apply patches/0008-rdma-gid-env.patch          # TF_RDMA_GID_INDEX for the ring, unset = 5
+git apply patches/0007-capture-join-issue31.patch  # a failed capture no longer poisons the pair
 git apply patches/0002-rdma-idle-nap.patch
 git apply patches/0005-dsv41-1m-readahead-clamp.patch
 
@@ -156,11 +159,13 @@ docker run --rm -v "$PWD:/src" -v /opt/zig:/zig -w /src \
     -Dnvcc=/usr/local/cuda/bin/nvcc -Dsm=121
 ```
 
-Binaries land in `zig-out/native/bin/tensorfold-native` and `zig-out/bin/` (`tf-dsv41-lanes`, `tf-dsv41-rank-cache`). The recipe's `serve.sh` also wants `--rdma-kernels /engine/rdma_gather.fatbin`; the branch carries the kernels embedded, so drop that flag and its preflight check, and point its preflight at your RoCE v2 GID (3 on our link). Beyond those site edits, `patches/0004-serve-keep-logs.patch` makes `serve.sh stop` keep each run's log in `LOG_DIR` before it removes the container. The v0.7.5 kit carries the AOT cubins for 64-row rounds (rows 49-64); sync the whole `kit/` to the worker after `verify_kit.sh`.
+Binaries land in `zig-out/native/bin/tensorfold-native` and `zig-out/bin/` (`tf-dsv41-lanes`, `tf-dsv41-rank-cache`). The recipe's `serve.sh` also wants `--rdma-kernels /engine/rdma_gather.fatbin`; the branch carries the kernels embedded, so drop that flag and its preflight check. Apply `patches/0009-serve-gid-discovery.patch` so the launcher finds your RoCE v2 GID index itself, and `patches/0004-serve-keep-logs.patch` so `stop` keeps each run's log in `LOG_DIR` before it removes the container. The v0.7.5 kit carries the AOT cubins for 64-row rounds (rows 49-64); sync the whole `kit/` to the worker after `verify_kit.sh`.
 
 Why the extra patches:
 
-- **GID index.** The branch hardcodes `gid_index = 5`; on this link the RoCE v2 address is GID 3, so both ranks died `error: VerbsFailed`. Four edits, or a small env plumb if your branch has one.
+- **GID index.** The branch hardcodes `gid_index = 5`; on a link whose RoCE v2 IPv4 entry is index 3 or 4, both ranks die `error: VerbsFailed`. `patches/0008` adds `TF_RDMA_GID_INDEX` for the ring; `patches/0009` makes the launcher discover the index and set it (plus NCCL and the neighbor index) on every boot.
+- **Jumbo MTU.** The GID is only half the link: both CX7 rails must carry `mtu 4500` (RoCE `active_mtu` 4096) and survive reboots. A reboot that resets them to 1500 gives the same `VerbsFailed` and a first decode that dies `CUDA_ERROR_STREAM_CAPTURE_UNJOINED (904)`. Persist it in netplan.
+- **Capture join.** `patches/0007` is the maintainer's fix for a failed decode stretch: it joins the two side streams, ends the capture and reports the body error, so one bad round does not make every later request fail with 904.
 - **Idle nap.** `families/dsv41/rdma.zig`'s proxy loop polls the doorbell and completion queue with no back-off, so each node held a full core at 100% while idle. The patch naps 100 us between looks after `TF_RDMA_IDLE_S` (2 s) of quiet; serving is unchanged because the ring is never quiet that long under load.
 - **1M read-ahead clamp.** v0.7.5's Engram read-ahead takes its span from `passCap`, which at a long prompt is the whole remaining pass, while the three buffers per Engram layer hold `chunk_rows` (4,096 rows). A 1M prompt panicked rank 1 (`index 50225232, len 196608`). One line clamps the span to `chunk_rows`; rows beyond it are read at apply time. With it, the 1M needle is exact and every other row is unchanged.
 

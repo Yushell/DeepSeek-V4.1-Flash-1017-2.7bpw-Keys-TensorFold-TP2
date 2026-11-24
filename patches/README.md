@@ -1,9 +1,11 @@
 # Patches in this folder
 
-`0002-rdma-idle-nap.patch`, `0004-serve-keep-logs.patch`, `0005-dsv41-1m-readahead-clamp.patch` and
-`0006-ooa-copy-min-rebased.patch` are the changes this kit runs beyond the pack's own three. `0002` is not ours;
-`0004` targets the recipe's launcher rather than the engine tree; `0005` is this repo's own one-line fix; `0006` is the
-pack's own copy-min patch rebased for this pin. All are reproduced here so the exact served tree is reproducible.
+`0002-rdma-idle-nap.patch`, `0004-serve-keep-logs.patch`, `0005-dsv41-1m-readahead-clamp.patch`,
+`0006-ooa-copy-min-rebased.patch`, `0007-capture-join-issue31.patch`, `0008-rdma-gid-env.patch` and
+`0009-serve-gid-discovery.patch` are the changes this kit runs beyond the pack's own three. `0002` is not ours;
+`0004`, `0009` target the recipe's launcher rather than the engine tree; `0005` is this repo's own one-line fix; `0006`
+is the pack's own copy-min patch rebased for this pin; `0007` is the maintainer's capture-join fix; `0008` is our local
+port of the GID env. All are reproduced here so the exact served tree is reproducible.
 
 Upstream PR #51 (`TF_FILL_DRAIN`) is merged into the pinned engine commit `c9c70953`, so the former
 `0003-fill-drain-pr51.patch` is no longer needed and stays only in this repo's git history. Credit for it is unchanged
@@ -75,6 +77,43 @@ Upstream PR #51 (`TF_FILL_DRAIN`) is merged into the pinned engine commit `c9c70
 - **Test:** `scripts/test_serve_stop.sh <serve.sh>` runs the shipped `stop()` text against a fake docker: 24 checks
   fail on the stock launcher and all pass on the patched one.
 
+## 0007: the capture-join fix for a failed decode stretch (upstream)
+
+- **What:** +67/−8 in `zig/src/families/dsv41/round.zig`. A decode stretch starts two side streams inside the CUDA graph
+  capture; if the stretch fails before those streams join, the error path now joins them and ends the capture, reporting
+  the body error instead of `CUDA_ERROR_STREAM_CAPTURE_UNJOINED (904)`.
+- **Why:** without it one failed capture leaves the capture open and every later request fails. On the 2x GB10 pair the first
+  decode after a bad boot read `904`, then every later request read `Failed`. It does not fix whatever fails first, only
+  stops one bad round from poisoning the pair.
+- **Provenance:** [bertholomus](https://github.com/bertholomus), branch
+  [`fix/tp2-31-capture-join`](https://github.com/bertholomus/TensorFold/tree/fix/tp2-31-capture-join), commit
+  [`a8ff91e`](https://github.com/bertholomus/TensorFold/commit/a8ff91e), filed under
+  [recipe issue #31](https://github.com/bertholomus/deepseek-v4.1-tensorfold-tp2-2xgb10/issues/31). Apache-2.0.
+- **Applies to:** `c9c70953`; `git apply --check` is clean.
+
+## 0008: `TF_RDMA_GID_INDEX` for the ring's queue pairs (this repo's local port)
+
+- **What:** a `servedGidIndex()` helper in `rdma.zig` and three call sites (`model.zig` two, `layer_main.zig` one).
+  `TF_RDMA_GID_INDEX` picks the GID index the ring's queue pairs use; unset keeps upstream's 5.
+- **Why:** the RoCE v2 IPv4 GID index is a function of the address assignment order. The reference pair's rails read index 3 before a
+  reboot and index 4 after a `netplan apply`; a hardcoded index is a reboot trap (the boot dies
+  `error: VerbsFailed`).
+- **Provenance:** local port of [bertholomus PR #58](https://github.com/bertholomus/TensorFold/pull/58) (`rdma_env.zig`,
+  default 5). This version adds no file and matches the `dsv41` family. Apache-2.0.
+- **Applies to:** `c9c70953`; `git apply --check` is clean.
+
+## 0009: the launcher discovers the GID index (this repo's own)
+
+- **What:** about +60 lines in the recipe's `scripts/serve.sh`. `gid_index()` scans the HCA's sysfs GID table for the
+  `RoCE v2` entry with an IPv4-mapped GID (`:ffff:`), then exports `NCCL_IB_GID_INDEX`, `TF_DS_NEIGHBOR_GID_INDEX` and
+  `TF_RDMA_GID_INDEX` from it; the preflight checks that index on both nodes instead of a fixed 3.
+- **Why:** with the index at 4, the stock preflight refused to start (`GID index 3 is not there`) and a hardcoded ring
+  failed `VerbsFailed`. Discovery makes a reboot or a netplan apply harmless.
+- **Applies to:** the recipe's `scripts/serve.sh`, after `0004` and the site GID edit; diffed against that state with one
+  line of context. `serve.sh print` shows the same index in `LINK` and the engine env.
+- **MTU companion:** the GID is only half the link. Both CX7 rails need `mtu 4500` (RoCE `active_mtu` 4096) persisted in
+  netplan; a reboot that resets them to 1500 is what produced `VerbsFailed` and the 904 in the first place.
+
 ## The pack's own three (not reproduced here)
 
 `0003-request-limits`, `0004-copy-min` and `0005-upstream-picks` ship with the pack
@@ -85,5 +124,7 @@ depth search, the admission 503, and sticky CUDA errors turning `/health` to 503
 
 ## What is not here
 
-The GID index edit (four hardcoded `5`s to `3`) is a site edit, not a patch, because the right value is whatever your
-fabric's RoCE v2 address is at. See the README's Build it section.
+The GID index is discovered at boot by `0009`, so there is no site edit to make. The **jumbo MTU** is still a host
+setting, not a patch: both CX7 rails must carry `mtu 4500` (RoCE `active_mtu` 4096) and survive reboots, or the ring
+fails on data. On the reference pair that is `mtu: 4500` in netplan; a reboot that resets the rails to 1500 is what produced
+`VerbsFailed` and the 904 in the first place.
