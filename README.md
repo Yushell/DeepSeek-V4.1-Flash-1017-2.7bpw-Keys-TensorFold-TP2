@@ -33,6 +33,7 @@ The deeper stack keeps its own credits (the RoCE transport, the kernel kit, the 
 | Warm restart | **loaded in 33.0 s**, 37 s to the chat check; both ranks carry `TF_FILL_ROUNDS=32` and `TF_RDMA_GID_INDEX=4` |
 | Sustained aggregate, 90 s, set b | 8 streams 164.4 · 16 streams **209.5** · **32 streams 241.6 tok/s** |
 | 16-stream capacity | 16 x 131,072-token prompts at once, 32-stream shape: burst **1,001.1 s**, **17/17 replies identical to their solo runs**, 16/16 needles found, all 16 states kept (129,024 cached tokens each) |
+| 4 x 1M capacity | four 1,048,576-token prompts at once: **4/4 needles found, 4/4 replies equal to their solo runs**, drafted equals serial; burst 2,134.6 s, solo resumes 12.4 s (1,046,528 cached tokens each) |
 | Long context | 1M needle: **1,048,407 prompt tokens, exact in 518.9 s** |
 | Load | ~34 s to ready; 110.3 GiB active; ~8 GiB still available on the head at the lowest |
 | Idle cost | **~2.5% of one core per node** (100% of a core without the idle-nap patch) |

@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.1 · 2026-11-24
+
+- Added the 4 x 1M capacity row: four 1,048,576-token prompts at once, **4/4 needles found, 4/4 replies equal to
+  their solo runs**, drafted equals serial; burst 2,134.6 s, solo resumes 12.4 s (1,046,528 cached tokens each). The
+  stock `long_check.py` appends a sampled fifth 1M case, which over-subscribes the 5.24M pool; the clean arm removes
+  it.
+
 ## v1.5.0 · 2026-11-24
 
 - Added `patches/0007-capture-join-issue31.patch`: bertholomus's `fix/tp2-31-capture-join` fix (commit `a8ff91e`).
